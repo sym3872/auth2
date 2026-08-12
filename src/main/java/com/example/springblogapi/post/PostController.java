@@ -1,17 +1,26 @@
 package com.example.springblogapi.post;
 
-import com.example.springblogapi.auth.User;
-import com.example.springblogapi.post.Post.PostRepository;
-import com.example.springblogapi.config.SwaggerConfig;
+import com.example.springblogapi.auth.AuthController.User;
+import com.example.springblogapi.config.SecurityConfig;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.Table;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.util.List;
+import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -28,85 +37,47 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
- * /api/posts 주소로 들어오는 게시글 관련 HTTP 요청을 처리하는 컨트롤러다.
- * 초보자가 흐름을 따라가기 쉽도록 서비스 클래스를 따로 만들지 않고, 이 예제에서는 Repository를 바로 사용한다.
+ * 게시글 CRUD API와 게시글 데이터 구조를 한 파일에 모은다.
+ * 서비스 클래스를 따로 만들지 않고 컨트롤러가 Repository를 직접 사용해 흐름을 짧게 유지한다.
  */
-// @RestController는 반환한 PostResponse를 Spring이 JSON으로 바꾸게 한다.
 @RestController
-// 이 클래스의 모든 API 주소 앞에는 /api/posts가 붙는다.
 @RequestMapping("/api/posts")
-// Swagger UI에서 게시글 관련 API를 Post 그룹으로 묶어 보여 준다.
 @Tag(name = "Post", description = "게시글 CRUD API")
 public class PostController {
 
-    /** 게시글 데이터를 저장하고 찾는 역할을 Spring이 주입해 준다. */
     private final PostRepository postRepository;
 
-    /**
-     * 컨트롤러가 생성될 때 PostRepository를 받아 둔다.
-     * 생성자 주입은 필요한 객체가 없으면 애플리케이션이 시작할 때 바로 알려 주기 때문에 실수를 찾기 쉽다.
-     */
     public PostController(PostRepository postRepository) {
-        // Spring이 만든 Repository 객체를 필드에 저장한다.
         this.postRepository = postRepository;
     }
 
-    /**
-     * 로그인한 사용자가 새 게시글을 작성하는 API다.
-     * JWT Security 단계가 합쳐지면 getCurrentLoginUser 메서드가 토큰에서 현재 회원을 찾아 작성자로 넣는다.
-     */
-    // POST /api/posts 요청을 이 메서드와 연결한다.
+    /** 로그인 사용자를 작성자로 넣어 새 게시글을 저장한다. */
     @PostMapping
-    // Swagger UI에서 이 API가 JWT 인증을 요구한다는 점을 표시한다.
     @Operation(summary = "게시글 작성", description = "로그인한 회원을 작성자로 하여 게시글을 생성합니다.")
-    @SecurityRequirement(name = SwaggerConfig.BEARER_AUTH)
+    @SecurityRequirement(name = SecurityConfig.BEARER_AUTH)
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "게시글 작성 성공"),
             @ApiResponse(responseCode = "400", description = "제목 또는 내용 입력값 오류"),
             @ApiResponse(responseCode = "401", description = "JWT 인증 필요")
     })
     public ResponseEntity<PostResponse> createPost(@Valid @RequestBody CreatePostRequest request) {
-        // JWT 필터가 SecurityContext에 넣은 현재 로그인 회원을 가져온다.
-        User currentUser = getCurrentLoginUser();
-
-        // 요청 JSON의 제목·내용과 로그인 회원을 묶어 새 Post 객체를 만든다.
-        Post post = new Post(request.title(), request.content(), currentUser);
-
-        // save를 호출하면 JPA가 posts 테이블에 INSERT하고 id가 채워진 객체를 반환한다.
-        Post savedPost = postRepository.save(post);
-
-        // 저장된 글을 응답용 record로 바꾸고 생성 성공 상태 201과 함께 보낸다.
+        Post savedPost = postRepository.save(
+                new Post(request.title(), request.content(), currentUser())
+        );
         return ResponseEntity.status(HttpStatus.CREATED).body(PostResponse.from(savedPost));
     }
 
-    /**
-     * 누구나 게시글 목록을 볼 수 있는 API다.
-     * SecurityConfig에서 이 주소의 GET 요청을 permitAll로 설정하면 로그인하지 않아도 접근할 수 있다.
-     * 작성자 정보를 지연 로딩해도 응답 객체로 바꾸는 동안 연결이 유지되도록 읽기 전용 트랜잭션을 사용한다.
-     */
-    // GET /api/posts 요청을 목록 조회 메서드와 연결한다.
+    /** 누구나 게시글 목록을 볼 수 있다. LAZY 작성자 정보를 읽기 위해 트랜잭션을 연다. */
     @GetMapping
-    // Swagger UI에서 목록 조회가 공개 API임을 문서화한다.
     @Operation(summary = "게시글 목록 조회", description = "로그인 없이 모든 게시글을 조회합니다.")
     @ApiResponse(responseCode = "200", description = "게시글 목록 조회 성공")
-    // readOnly는 이 메서드가 데이터를 수정하지 않는 조회 작업임을 표시한다.
     @Transactional(readOnly = true)
     public List<PostResponse> getPosts() {
-        // findAll로 모든 Post를 읽고 각 Post를 안전한 응답 객체로 변환해 List로 만든다.
-        return postRepository.findAll().stream()
-                // PostResponse::from은 각 post에 from(post)를 적용한다는 짧은 문법이다.
-                .map(PostResponse::from)
-                .toList();
+        return postRepository.findAll().stream().map(PostResponse::from).toList();
     }
 
-    /**
-     * 게시글 번호로 한 건의 상세 내용을 조회하는 API다.
-     * 없는 번호를 요청하면 최소한의 예외로 잘못된 요청임을 알린다.
-     * 작성자 정보를 응답으로 바꾸는 동안 연결을 유지하도록 읽기 전용 트랜잭션을 사용한다.
-     */
-    // {id} 부분에는 사용자가 요청한 게시글 번호가 들어간다.
+    /** 게시글 한 건을 공개 조회한다. */
     @GetMapping("/{id}")
-    // Swagger UI에서 상세 조회가 공개 API임을 문서화한다.
     @Operation(summary = "게시글 상세 조회", description = "게시글 번호로 한 건의 내용을 조회합니다.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "게시글 상세 조회 성공"),
@@ -114,23 +85,13 @@ public class PostController {
     })
     @Transactional(readOnly = true)
     public PostResponse getPost(@PathVariable Long id) {
-        // @PathVariable이 URL의 글 번호를 Long id 매개변수에 넣어 준다.
-        Post post = findPostById(id);
-
-        // 엔티티 자체 대신 공개할 필드만 들어 있는 응답 객체를 반환한다.
-        return PostResponse.from(post);
+        return PostResponse.from(findPost(id));
     }
 
-    /**
-     * 로그인한 사용자가 자기 게시글의 제목과 본문을 수정하는 API다.
-     * 작성자가 다르면 저장하지 않아 다른 사람의 글을 바꾸지 못하게 한다.
-     * 조회한 게시글과 작성자 정보를 같은 트랜잭션 안에서 비교하고 저장하기 위해 트랜잭션을 사용한다.
-     */
-    // PUT /api/posts/{id} 요청을 게시글 수정 메서드와 연결한다.
+    /** 로그인한 작성자 본인만 제목과 본문을 수정할 수 있다. */
     @PutMapping("/{id}")
-    // Swagger UI에서 JWT 인증과 작성자 본인 검사가 모두 필요함을 표시한다.
     @Operation(summary = "게시글 수정", description = "작성자 본인만 제목과 내용을 수정할 수 있습니다.")
-    @SecurityRequirement(name = SwaggerConfig.BEARER_AUTH)
+    @SecurityRequirement(name = SecurityConfig.BEARER_AUTH)
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "게시글 수정 성공"),
             @ApiResponse(responseCode = "400", description = "제목 또는 내용 입력값 오류"),
@@ -138,41 +99,18 @@ public class PostController {
             @ApiResponse(responseCode = "403", description = "작성자 본인이 아님"),
             @ApiResponse(responseCode = "404", description = "게시글 없음")
     })
-    // 조회, 권한 검사, 수정을 하나의 작업 단위로 묶는다.
     @Transactional
-    public PostResponse updatePost(
-            @PathVariable Long id,
-            @Valid @RequestBody UpdatePostRequest request
-    ) {
-        // 1단계: JWT로 인증된 현재 사용자를 가져온다.
-        User currentUser = getCurrentLoginUser();
-
-        // 2단계: 수정할 게시글이 실제로 존재하는지 조회한다.
-        Post post = findPostById(id);
-
-        // 3단계: 현재 사용자와 글 작성자가 같은지 확인한다.
-        checkWriter(post, currentUser);
-
-        // 4단계: 검사를 모두 통과한 경우에만 제목과 본문을 변경한다.
+    public PostResponse updatePost(@PathVariable Long id, @Valid @RequestBody UpdatePostRequest request) {
+        Post post = findPost(id);
+        checkWriter(post);
         post.update(request.title(), request.content());
-
-        // 변경된 엔티티를 저장하고 최신 객체를 받는다.
-        Post savedPost = postRepository.save(post);
-
-        // 수정된 결과를 JSON 응답용 형태로 바꿔 반환한다.
-        return PostResponse.from(savedPost);
+        return PostResponse.from(post);
     }
 
-    /**
-     * 로그인한 사용자가 자기 게시글을 삭제하는 API다.
-     * 작성자가 아닌 경우에는 삭제하지 않아 본인만 삭제할 수 있게 한다.
-     * 조회·작성자 비교·삭제를 하나의 트랜잭션으로 처리한다.
-     */
-    // DELETE /api/posts/{id} 요청을 삭제 메서드와 연결한다.
+    /** 로그인한 작성자 본인만 게시글을 삭제할 수 있다. */
     @DeleteMapping("/{id}")
-    // Swagger UI에서 삭제 API의 JWT 인증과 작성자 본인 검사를 표시한다.
     @Operation(summary = "게시글 삭제", description = "작성자 본인만 게시글을 삭제할 수 있습니다.")
-    @SecurityRequirement(name = SwaggerConfig.BEARER_AUTH)
+    @SecurityRequirement(name = SecurityConfig.BEARER_AUTH)
     @ApiResponses({
             @ApiResponse(responseCode = "204", description = "게시글 삭제 성공"),
             @ApiResponse(responseCode = "401", description = "JWT 인증 필요"),
@@ -181,92 +119,54 @@ public class PostController {
     })
     @Transactional
     public ResponseEntity<Void> deletePost(@PathVariable Long id) {
-        // 1단계: 현재 로그인 회원을 확인한다.
-        User currentUser = getCurrentLoginUser();
-
-        // 2단계: 삭제할 게시글을 조회한다.
-        Post post = findPostById(id);
-
-        // 3단계: 작성자 본인인지 확인하고, 아니면 403 오류를 발생시킨다.
-        checkWriter(post, currentUser);
-
-        // 4단계: 검사를 통과한 게시글을 데이터베이스에서 삭제한다.
+        Post post = findPost(id);
+        checkWriter(post);
         postRepository.delete(post);
-
-        // 삭제 응답에는 본문이 필요 없으므로 HTTP 204 No Content를 반환한다.
         return ResponseEntity.noContent().build();
     }
 
-    /**
-     * 여러 API에서 반복되는 게시글 조회 코드를 한 곳에 모은 작은 보조 메서드다.
-     * 존재하지 않는 게시글이면 이후 코드가 null을 사용하다 실패하지 않도록 즉시 예외를 낸다.
-     */
-    private Post findPostById(Long id) {
-        // Optional에 값이 있으면 Post를 반환하고, 없으면 아래 404 예외를 만든다.
-        return postRepository.findById(id)
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND,
-                        "게시글을 찾을 수 없습니다. id=" + id
-                ));
+    /** 없는 글은 바로 404로 응답해 이후 코드가 null을 사용하지 않게 한다. */
+    private Post findPost(Long id) {
+        return postRepository.findById(id).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "게시글을 찾을 수 없습니다. id=" + id)
+        );
     }
 
-    /**
-     * 현재 로그인한 회원과 게시글 작성자가 같은지 검사한다.
-     * id를 비교하는 이유는 데이터베이스에서 같은 회원을 서로 다른 자바 객체로 읽어도 정확히 본인임을 판단하기 위해서다.
-     */
-    private void checkWriter(Post post, User currentUser) {
-        // 게시글의 author.id와 JWT로 찾은 currentUser.id가 다른지 비교한다.
-        if (!post.getAuthor().getId().equals(currentUser.getId())) {
-            // 다른 회원의 글이면 403 Forbidden으로 수정과 삭제를 막는다.
-            throw new ResponseStatusException(
-                    HttpStatus.FORBIDDEN,
-                    "작성자 본인만 수정하거나 삭제할 수 있습니다."
-            );
-        }
-    }
-
-    /**
-     * JWT 검증 필터가 SecurityContext에 넣어 둔 현재 로그인 사용자를 가져온다.
-     * 이 메서드는 POST, PUT, DELETE에서만 호출되며, SecurityConfig가 해당 요청에 로그인을 요구한다.
-     */
-    private User getCurrentLoginUser() {
-        // 현재 요청의 인증 결과를 SecurityContext에서 읽는다.
+    /** JWT 필터가 SecurityContext에 넣은 로그인 User를 꺼낸다. */
+    private User currentUser() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-
-        // JWT 필터가 넣은 principal이 User인지 확인해 안전하게 형 변환한다.
         if (authentication == null || !(authentication.getPrincipal() instanceof User user)) {
-            // 보안 설정상 이 상황은 발생하지 않아야 하지만, 혹시 모를 잘못된 호출은 즉시 막는다.
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "로그인이 필요합니다.");
         }
-
-        // 게시글 작성자와 비교할 실제 로그인 회원을 반환한다.
         return user;
     }
 
-    /**
-     * 게시글 작성 JSON의 제목과 본문을 받는 작은 자료 상자다.
-     * record가 생성자와 값을 읽는 메서드를 자동으로 만들어 주므로 별도 DTO 파일을 만들지 않는다.
-     */
+    /** JWT의 회원 번호와 게시글 작성자 번호가 같은지 비교해 타인의 변경을 막는다. */
+    private void checkWriter(Post post) {
+        if (!post.getAuthor().getId().equals(currentUser().getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "작성자 본인만 수정하거나 삭제할 수 있습니다.");
+        }
+    }
+
+    /** 게시글 작성 요청 JSON이다. */
     public record CreatePostRequest(
-            // 제목과 내용은 공백만 입력하는 것도 허용하지 않는다.
             @Schema(description = "게시글 제목", example = "첫 번째 글")
-            @NotBlank(message = "제목은 비어 있을 수 없습니다.") String title,
+            @NotBlank String title,
             @Schema(description = "게시글 본문", example = "JWT로 작성한 첫 번째 게시글입니다.")
-            @NotBlank(message = "내용은 비어 있을 수 없습니다.") String content
+            @NotBlank String content
     ) {
     }
 
-    /** 게시글 수정 JSON의 새 제목과 본문을 받는 자료 상자다. */
+    /** 게시글 수정 요청 JSON이다. */
     public record UpdatePostRequest(
-            // 수정 요청도 제목과 내용이 모두 있어야 한다.
             @Schema(description = "수정할 게시글 제목", example = "수정한 글")
-            @NotBlank(message = "제목은 비어 있을 수 없습니다.") String title,
+            @NotBlank String title,
             @Schema(description = "수정할 게시글 본문", example = "작성자 본인만 수정할 수 있습니다.")
-            @NotBlank(message = "내용은 비어 있을 수 없습니다.") String content
+            @NotBlank String content
     ) {
     }
 
-    /** 게시글과 공개 가능한 작성자 정보만 JSON으로 반환하는 자료 상자다. */
+    /** API 응답에 필요한 게시글과 작성자 공개 정보만 담는다. */
     public record PostResponse(
             @Schema(description = "게시글 번호", example = "1") Long id,
             @Schema(description = "게시글 제목", example = "첫 번째 글") String title,
@@ -274,9 +174,7 @@ public class PostController {
             @Schema(description = "작성자 회원 번호", example = "1") Long authorId,
             @Schema(description = "작성자 닉네임", example = "홍길동") String authorNickname
     ) {
-        /** Post 엔티티에서 응답에 필요한 값만 골라 복사한다. */
         public static PostResponse from(Post post) {
-            // 비밀번호 같은 User의 민감한 정보는 넣지 않고 작성자 id와 닉네임만 넣는다.
             return new PostResponse(
                     post.getId(),
                     post.getTitle(),
@@ -285,5 +183,64 @@ public class PostController {
                     post.getAuthor().getNickname()
             );
         }
+    }
+
+    /**
+     * H2의 posts 테이블 한 행을 표현한다.
+     * 작성자 정보는 필요할 때만 읽는 LAZY 관계로 둔다.
+     */
+    @Entity
+    @Table(name = "posts")
+    public static class Post {
+
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+
+        @Column(nullable = false, length = 100)
+        private String title;
+
+        @Column(nullable = false, columnDefinition = "TEXT")
+        private String content;
+
+        @ManyToOne(fetch = FetchType.LAZY)
+        @JoinColumn(name = "author_id", nullable = false)
+        private User author;
+
+        /** JPA가 데이터베이스 값으로 객체를 만들 때 필요한 기본 생성자다. */
+        protected Post() {
+        }
+
+        public Post(String title, String content, User author) {
+            this.title = title;
+            this.content = content;
+            this.author = author;
+        }
+
+        /** 작성자는 유지하고 제목과 본문만 바꾼다. */
+        public void update(String title, String content) {
+            this.title = title;
+            this.content = content;
+        }
+
+        public Long getId() {
+            return id;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public User getAuthor() {
+            return author;
+        }
+    }
+
+    /** JpaRepository가 기본 CRUD 메서드를 자동으로 제공하는 게시글 저장소다. */
+    public interface PostRepository extends JpaRepository<Post, Long> {
     }
 }
